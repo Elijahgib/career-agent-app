@@ -1,0 +1,38 @@
+# dependencies
+node_modules/
+
+# next.js
+.next/
+out/
+build/
+next-env.d.ts
+*.tsbuildinfo
+
+# prisma
+src/generated/
+prisma/*.db
+prisma/*.db-journal
+*.db
+*.db-journal
+
+# env — never commit secrets
+.env
+.env.local
+.env.*.local
+
+# exports produced by the app (may contain personal data)
+exports/
+
+# misc
+.DS_Store
+Thumbs.db
+coverage/
+npm-debug.log*
+
+# safety
+*.db
+*.sqlite*
+.env
+.env.local
+node_modules/
+.next/

@@ -1,0 +1,360 @@
+// Career Agent App — persistence schema.
+//
+// Design notes
+// - SQLite locally; every type used here is portable to PostgreSQL.
+// - Enum-like columns are plain strings validated in TypeScript
+//   (src/lib/domain/enums.ts) so the schema ports cleanly.
+// - List/structured columns are JSON-encoded strings (suffix `Json`).
+//   On Postgres these can become `Json`/`String[]` columns.
+// - Every candidate-owned row cascades from CandidateProfile so
+//   "delete my data" is a single delete.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// Future real accounts. In v0.1 profiles are local and ownerless.
+model User {
+  id          String             @id @default(cuid())
+  email       String?            @unique
+  displayName String?
+  createdAt   DateTime           @default(now())
+  profiles    CandidateProfile[]
+}
+
+model CandidateProfile {
+  id          String   @id @default(cuid())
+  ownerId     String?
+  owner       User?    @relation(fields: [ownerId], references: [id], onDelete: SetNull)
+  displayName String
+  headline    String? // private label only — never printed on documents
+  email       String?
+  phone       String?
+  city        String?
+  region      String?
+  country     String?
+  links       String   @default("[]") // JSON string[]
+  careerLevel String   @default("EARLY") // ENTRY | EARLY | MID | SENIOR
+  isDemo      Boolean  @default(false)
+  nextFactNo  Int      @default(1)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  preferences   Preferences?
+  positions     Position[]
+  education     Education[]
+  facts         EvidenceFact[]
+  matches       JobMatch[]
+  applications  Application[]
+  documents     GeneratedDocument[]
+  notifications Notification[]
+  emailSignals  EmailSignal[]
+  pendingImport PendingImport?
+}
+
+// A parsed resume held between upload and the user approving the diff against existing data.
+model PendingImport {
+  id        String           @id @default(cuid())
+  profileId String           @unique
+  profile   CandidateProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  filename  String?
+  json      String
+  createdAt DateTime         @default(now())
+}
+
+model Preferences {
+  id                      String           @id @default(cuid())
+  profileId               String           @unique
+  profile                 CandidateProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  targetTitlesJson        String           @default("[]")
+  targetKeywordsJson      String           @default("[]")
+  desiredSalaryMin        Int? // annual, in salaryCurrency
+  salaryHardFloor         Int? // annual; jobs whose max is below this are SKIP
+  salaryCurrency          String           @default("USD")
+  remotePreference        String           @default("ANY") // REMOTE_ONLY | REMOTE_OR_HYBRID | ANY | ONSITE_PREFERRED
+  acceptableLocationsJson String           @default("[]")
+  willingToRelocate       Boolean          @default(false)
+  employmentTypesJson     String           @default("[\"FULL_TIME\"]")
+  excludedEmploymentJson  String           @default("[]")
+  excludedCompaniesJson   String           @default("[]")
+  excludedKeywordsJson    String           @default("[]")
+  securityClearance       String           @default("NONE") // NONE | PUBLIC_TRUST | SECRET | TOP_SECRET
+  hasDriversLicense       Boolean          @default(true)
+  canTravelPercent        Int?
+  workAuthorization       String?
+  updatedAt               DateTime         @updatedAt
+}
+
+model Position {
+  id                 String           @id @default(cuid())
+  profileId          String
+  profile            CandidateProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  employer           String
+  title              String
+  location           String?
+  employmentType     String           @default("FULL_TIME")
+  startDate          String // YYYY-MM
+  endDate            String? // YYYY-MM, null = current
+  verificationStatus String           @default("UNVERIFIED") // VERIFIED | UNVERIFIED
+  sortOrder          Int              @default(0)
+  createdAt          DateTime         @default(now())
+  facts              EvidenceFact[]
+}
+
+model Education {
+  id                 String           @id @default(cuid())
+  profileId          String
+  profile            CandidateProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  institution        String
+  credential         String // e.g. "A.A.S. Network Administration"
+  level              String // HIGH_SCHOOL | CERTIFICATE | ASSOCIATE | BACHELOR | MASTER | DOCTORATE
+  field              String?
+  gpa                String?
+  honors             String?
+  status             String           @default("COMPLETED") // COMPLETED | IN_PROGRESS | INCOMPLETE
+  startDate          String?
+  endDate            String?
+  verificationStatus String           @default("UNVERIFIED")
+  createdAt          DateTime         @default(now())
+}
+
+// The Evidence Ledger. Canonical facts are never rewritten to match a job.
+model EvidenceFact {
+  id                       String           @id @default(cuid())
+  code                     String // FACT-001 (unique per profile)
+  profileId                String
+  profile                  CandidateProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  positionId               String?
+  position                 Position?        @relation(fields: [positionId], references: [id], onDelete: SetNull)
+  context                  String? // employer / school / project context
+  roleContext              String? // job title / role context
+  category                 String // DUTY | ACHIEVEMENT | SKILL | TOOL | CERTIFICATION | LICENSE | PROJECT | LEARNING | SOFT_SKILL | CLEARANCE
+  experienceType           String           @default("PROFESSIONAL") // PROFESSIONAL | VOLUNTEER | ACADEMIC | PROJECT | LEARNING
+  canonicalFact            String
+  source                   String           @default("Self-reported")
+  sourceDetail             String?
+  verificationStatus       String           @default("UNVERIFIED")
+  confidence               String           @default("MEDIUM") // HIGH | MEDIUM | LOW
+  conceptIdsJson           String           @default("[]")
+  allowedWordingJson       String           @default("[]")
+  prohibitedExpansionsJson String           @default("[]")
+  relationsJson            String           @default("[]") // explicit relationship(s): TROUBLESHOT, ESCALATED_TO, … (empty = inferred)
+  startDate                String?
+  endDate                  String?
+  verifiedAt               DateTime?
+  createdAt                DateTime         @default(now())
+  updatedAt                DateTime         @updatedAt
+
+  @@unique([profileId, code])
+  @@index([profileId, verificationStatus])
+}
+
+model Job {
+  id                    String              @id @default(cuid())
+  dedupeKey             String              @unique
+  title                 String
+  company               String
+  location              String?
+  remoteType            String              @default("UNKNOWN") // REMOTE | HYBRID | ONSITE | UNKNOWN
+  employmentType        String              @default("UNKNOWN") // FULL_TIME | PART_TIME | CONTRACT | TEMP | INTERNSHIP | UNKNOWN
+  salaryMin             Int?
+  salaryMax             Int?
+  salaryCurrency        String?
+  salaryPeriod          String? // YEAR | HOUR
+  description           String
+  applyUrl              String?
+  reqId                 String?
+  department            String?
+  status                String              @default("ACTIVE") // ACTIVE | CLOSED | UNKNOWN
+  postedAt              DateTime?
+  firstSeenAt           DateTime            @default(now())
+  lastSeenAt            DateTime            @default(now())
+  lastVerifiedAt        DateTime?
+  closedAt              DateTime?
+  fieldVerificationJson String              @default("{}") // field -> VERIFIED | LIKELY | UNKNOWN
+  isDemo                Boolean             @default(false)
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+  sources               JobSource[]
+  matches               JobMatch[]
+  applications          Application[]
+  documents             GeneratedDocument[]
+
+  @@index([status, firstSeenAt])
+}
+
+// Provenance: every place a job was seen. Preserved across dedupe merges.
+model JobSource {
+  id          String    @id @default(cuid())
+  jobId       String
+  job         Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  sourceType  String // MANUAL | GREENHOUSE | LEVER | ASHBY | CAREER_PAGE | DEMO
+  sourceName  String // board token / company slug / "manual"
+  externalId  String
+  url         String?
+  postedAt    DateTime?
+  firstSeenAt DateTime  @default(now())
+  lastSeenAt  DateTime  @default(now())
+
+  @@unique([sourceType, sourceName, externalId])
+}
+
+// Saved boards that the background scanner checks.
+model SourceConfig {
+  id         String    @id @default(cuid())
+  sourceType String // GREENHOUSE | LEVER | ASHBY | CAREER_PAGE
+  identifier String // board token, company slug, or career page URL
+  label      String?
+  enabled    Boolean   @default(true)
+  lastScanAt DateTime?
+  lastStatus String?
+  lastError  String?
+  createdAt  DateTime  @default(now())
+
+  @@unique([sourceType, identifier])
+}
+
+model ScanRun {
+  id          String    @id @default(cuid())
+  trigger     String    @default("MANUAL")
+  status      String    @default("RUNNING") // RUNNING | SUCCEEDED | PARTIAL | FAILED
+  startedAt   DateTime  @default(now())
+  finishedAt  DateTime?
+  sourcesJson String    @default("[]")
+  jobsSeen    Int       @default(0)
+  jobsNew     Int       @default(0)
+  jobsClosed  Int       @default(0)
+  errorsJson  String    @default("[]")
+}
+
+model JobMatch {
+  id            String           @id @default(cuid())
+  profileId     String
+  profile       CandidateProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  jobId         String
+  job           Job              @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  tier          String // STRONG | GOOD | STRETCH | SKIP
+  score         Int
+  resultJson    String
+  engineVersion String
+  userVerdict   String? // REJECTED
+  verdictReason String?
+  computedAt    DateTime         @default(now())
+
+  @@unique([profileId, jobId])
+  @@index([profileId, tier, score])
+}
+
+model Application {
+  id                    String             @id @default(cuid())
+  profileId             String
+  profile               CandidateProfile   @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  jobId                 String?
+  job                   Job?               @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  status                String             @default("SAVED")
+  company               String
+  role                  String
+  reqId                 String?
+  source                String?
+  url                   String?
+  salaryText            String?
+  location              String?
+  appliedAt             DateTime?
+  followUpAt            DateTime?
+  notes                 String?
+  outcome               String?
+  resumeDocumentId      String?
+  coverLetterDocumentId String?
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+  events                ApplicationEvent[]
+  interviews            Interview[]
+
+  @@unique([profileId, jobId])
+}
+
+model ApplicationEvent {
+  id            String      @id @default(cuid())
+  applicationId String
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  fromStatus    String?
+  toStatus      String
+  note          String?
+  actor         String      @default("USER") // USER | SYSTEM | EMAIL_SUGGESTION
+  createdAt     DateTime    @default(now())
+}
+
+model Interview {
+  id            String      @id @default(cuid())
+  applicationId String
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  scheduledAt   DateTime
+  kind          String      @default("PHONE_SCREEN")
+  withWhom      String?
+  location      String?
+  notes         String?
+  createdAt     DateTime    @default(now())
+}
+
+model GeneratedDocument {
+  id            String           @id @default(cuid())
+  profileId     String
+  profile       CandidateProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  jobId         String?
+  job           Job?             @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  kind          String // RESUME | COVER_LETTER | INTERVIEW_PREP
+  version       Int
+  title         String
+  status        String // PASSED | BLOCKED
+  provider      String // template | anthropic | openai
+  contentJson   String // structured document incl. claims + provenance
+  renderedText  String
+  gateJson      String // Truth Gate report
+  engineVersion String
+  createdAt     DateTime         @default(now())
+
+  @@index([profileId, jobId, kind])
+}
+
+model Notification {
+  id            String           @id @default(cuid())
+  profileId     String
+  profile       CandidateProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  type          String // STRONG_MATCH | FOLLOW_UP | INTERVIEW_REMINDER | STATUS_EMAIL | JOB_REACTIVATED
+  title         String
+  body          String
+  jobId         String?
+  applicationId String?
+  dedupeKey     String
+  readAt        DateTime?
+  createdAt     DateTime         @default(now())
+
+  @@unique([profileId, dedupeKey])
+}
+
+// Future email integration: only derived signals are stored, never full bodies.
+model EmailSignal {
+  id              String           @id @default(cuid())
+  profileId       String
+  profile         CandidateProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  provider        String // mock | gmail | outlook
+  messageId       String
+  receivedAt      DateTime
+  fromDomain      String?
+  subject         String?
+  detectedType    String // CONFIRMATION | INTERVIEW | REJECTION | OFFER | UNKNOWN
+  company         String?
+  role            String?
+  confidence      Float
+  applicationId   String?
+  suggestedStatus String?
+  state           String           @default("PENDING") // PENDING | ACCEPTED | DISMISSED
+  createdAt       DateTime         @default(now())
+
+  @@unique([profileId, provider, messageId])
+}
